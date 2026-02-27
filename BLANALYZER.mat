@@ -1,0 +1,207 @@
+clc; clear; close all;
+% gets the shit from the files you care about..... should be a .mat file
+% datafilename = ('TEST_14343.mat');
+% datafilename = ('TEST_14344.mat');
+datafilename = ('TEST_14345.mat');
+
+% ::::: Begin the function::::: 
+% function
+% input should be: datafilename, 
+load(datafilename);
+files = dir("DTOTR2_data_step*.h5");
+numFiles = length(files);
+%
+tmp = h5read(files(1).name, '/entry/data/data');
+[nX, nY,nFrames] = size(tmp);
+totalFrames = nFrames * numFiles;
+% stack = h5read(files(1).name, '/entry/data/data');
+ step = data_struct.scalars.steps;
+ TCAV_A  = data_struct.scalars.BSA_List_S20.TCAV_LI20_2400_A;
+ TCAV_P  = data_struct.scalars.BSA_List_S20.TCAV_LI20_2400_P;
+ BLEN_20 = data_struct.scalars.BSA_List_S20.BLEN_LI20_3014_BRAW;
+ 
+% Steps = struct()
+for k = 1:16
+    Steps(k).idx = find(step == k);
+    Steps(k).TCAV_A = TCAV_A(Steps(k).idx);
+    Steps(k).TCAV_P = TCAV_P(Steps(k).idx);
+    Steps(k).BLEN_20 = BLEN_20(Steps(k).idx);
+    Steps(k).Frames = h5read(files(k).name, '/entry/data/data');
+end 
+
+
+stpssz = 1:size(Steps(k).BLEN_20,1);
+hold on
+scatter(stpssz,Steps(k).TCAV_P)
+scatter(stpssz,Steps(k).BLEN_20)
+
+
+% XTCAV: -90 deg Data
+for j = 1:5
+    neg90(j).idk = find( Steps(j).TCAV_P <= -87.0 & Steps(j).TCAV_P >= -92.0 );
+    for i = 1:numel(neg90(j).idk)
+        neg90(j).frames(:,:,i) = Steps(j).Frames(:,:,neg90(j).idk(i));
+    end
+end
+
+% XTCAV: +90 deg Data
+pos90(j).idk = find( Steps(j).TCAV_P >= 87.0 & Steps(j).TCAV_P <= 92.0 );
+for i = 1:1 % numel(pos90(j).idk)
+    pos90(j).frames(:,:,i) = Steps(j).Frames(:,:,pos90(j).idk(i));
+end
+
+% XTCAV: 0 deg Data
+% IMPORTANT: use LOCAL indices into Frames(:,:,localIndex), not Steps(1).idx (global indices)
+off = find(Steps(j).TCAV_P < -100);
+XTCoff(j).idk = off;
+% Extract frames corresponding to TVoff indices
+for i = 1:length(off)
+    XTCoff(j).TVoff_frames(:,:,i) = Steps(j).Frames(:,:,off(i));
+end
+
+% ---- Measure sigmas for OFF, +90, -90 (fixed loop lengths) ----
+sig_x_Off   = nan(1, size(XTCoff(j).TVoff_frames,3));
+sig_y_Off   = nan(1, size(XTCoff(j).TVoff_frames,3));
+mu_x_Off    = nan(1, size(XTCoff(j).TVoff_frames,3));
+mu_y_Off    = nan(1, size(XTCoff(j).TVoff_frames,3));
+
+for i = 1:size(XTCoff(j).TVoff_frames,3)
+    I(:,:,i) = XTCoff(j).TVoff_frames(:,:,i);   % intensity image (rows=y, cols=x)
+    [~,~, sig_x_Off(i), sig_y_Off(i), mu_x_Off(i), mu_y_Off(i), ~,~,~,~,~] = spotSigma2D(I(:,:,i));
+end 
+
+sig_x_pos90 = nan(1, size(pos90(j).frames,3));
+sig_y_pos90 = nan(1, size(pos90(j).frames,3));
+mu_x_pos90  = nan(1, size(pos90(j).frames,3));
+mu_y_pos90  = nan(1, size(pos90(j).frames,3));
+
+for i = 1:size(pos90(j).frames,3)
+    I(:,:,i) = pos90(j).frames(:,:,i);   % intensity image (rows=y, cols=x)
+    [~,~, sig_x_pos90(i), sig_y_pos90(i), mu_x_pos90(i), mu_y_pos90(i), ~,~,~,~,~] = spotSigma2D(I(:,:,i));
+end 
+
+sig_x_neg90 = nan(1, size(neg90(j).frames,3));
+sig_y_neg90 = nan(1, size(neg90(j).frames,3));
+mu_x_neg90  = nan(1, size(neg90(j).frames,3));
+mu_y_neg90  = nan(1, size(neg90(j).frames,3));
+
+for i = 1:size(neg90(j).frames,3)
+    I(:,:,i) = neg90(j).frames(:,:,i);   % intensity image (rows=y, cols=x)
+    [~,~, sig_x_neg90(i), sig_y_neg90(i), mu_x_neg90(i), mu_y_neg90(i), ~,~,~,~,~] = spotSigma2D(I(:,:,i));
+end 
+
+calval = 728; %um/deg
+
+% ---- Build-a-bunch length VECTOR (one per matched triple) ----
+% NOTE: This uses your XTCAV_BL "parabola method" with A = [-1,0,1].
+% We need 1 value from each group per element. We match by index order.
+nTrip = min([numel(sig_x_neg90), numel(sig_x_Off), numel(sig_x_pos90)]);
+sigZ = nan(1, nTrip);
+
+for k = 1:nTrip
+    sigZ(k) = XTCAV_BL(sig_x_neg90(k), sig_x_Off(k), sig_x_pos90(k), calval);
+end
+
+% quick hist plot look thing 
+figure;
+histogram(sigZ, 30);
+xlabel('\sigma_z (\mum)'); ylabel('counts'); grid on;
+title('Bunch length distribution (XTCAV\_BL output)');
+
+fprintf('sigZ median = %.2f um | mean = %.2f um | N = %d\n', median(sigZ,'omitnan'), mean(sigZ,'omitnan'), sum(isfinite(sigZ)));
+
+
+
+% x_cal = (0:(99-81)/6:99); 
+% Y = calval*x_cal; 
+% figure( )
+% hold on 
+% plot(x_cal,Y)
+% scatter(x_cal,Y)
+% p = polyfit(x_cal, Y, 1);
+% yfit = polyval(p, x_cal);
+% hold off
+% % cal = calval*X_lims
+% % X_lims = (-90:50:90);
+
+function [x,y,sig_x,sig_y, mu_x, mu_y,Px,Py,Px_,Py_, Iproc] = spotSigma2D(I)
+%
+I = double(I);
+% image(I)
+% 1) Background subtract (robust)
+bg = prctile(I(:), 20);   % tune 10-30 if needed
+I = I - bg;
+I(I < 0) = 0;
+
+% 2) Threshold to kill noise floor
+thr = prctile(I(I>0), 80);  % tune 50-80 depending on SNR
+BW = I > thr;
+% 3) ROI from thresholded pixels (bounding box)
+if any(BW(:))
+    [yy, xx] = find(BW);
+    pad = 10;
+    y0 = max(min(yy)-pad, 1);  y1 = min(max(yy)+pad, size(I,1));
+    x0 = max(min(xx)-pad, 1);  x1 = min(max(xx)+pad, size(I,2));
+    Iroi = I(y0:y1, x0:x1);
+else
+    Iroi = I; % fallback
+end
+Iproc = Iroi;
+% 4) Projections
+Px = sum(Iproc, 1);
+Py = sum(Iproc, 2)';
+Px_ = smoothdata(Px);
+Py_ = smoothdata(Py);
+x = 1:size(Iproc,2);
+y = 1:size(Iproc,1);
+% 5) Weighted mean
+mu_x = sum(x .* Px) / sum(Px); mu_y = sum(y .* Py) / sum(Py);
+% 6) RMS
+sig_x = sqrt( sum(((x - mu_x).^2) .* Px) / sum(Px) ); sig_y = sqrt( sum(((y - mu_y).^2) .* Py) / sum(Py) );
+end
+
+
+function SigZ_um = XTCAV_BL(SigYpos1,SigY0,SigYneg1,K)
+% this is the parabolic fit version of the bunch lenght calibration: 
+% we have normalized ±90 to ±1 for this... 
+% because of this S == K this time
+% but remember that S = KA... and we didnt really get what A was
+% but there was this parabolic formula where we use sigY^2 = aA^2 +bA + c 
+Y = [SigYpos1^2;
+     SigY0^2;
+     SigYneg1^2];
+
+X = [1 -1 1;
+     0  0 1;
+     1  1 1];
+
+beta = X \ Y; % [a;b;c]
+a = beta(1);
+
+sqrt_a = sqrt(a);  % units: um per A
+SigZ_um = (sqrt_a/abs(K)) * 73;  % X-band: 73 um/deg
+end 
+
+% % % figure() 
+% % % plot(x,Px_)
+% % % title(sprintf('Beam RMS: \\mu_x = %.2f \\mum', mu_x))
+% % % 
+% % % figure()
+% % % plot(y,Py_)
+% % % title(sprintf('Beam RMS: \\mu_y = %.2f \\mum', mu_y))
+% % % figure() 
+% % % image(I)
+% % % 
+% % % calval = 728; %um/deg
+% % % x_cal = (0:(99-81)/6:99); 
+% % % 
+% % % Y = calval*x_cal; 
+% % % figure( )
+% % % hold on 
+% % % plot(x_cal,Y)
+% % % scatter(x_cal,Y)
+% % % 
+% % % p = polyfit(x_cal, Y, 1);
+
+% yfit = polyval(p, x_cal);
+% hold off
