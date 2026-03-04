@@ -1,0 +1,460 @@
+clc; clear; close all;
+% gets the shit from the files you care about..... should be a .mat file
+% datafilename = ('TEST_14343.mat');
+% datafilename = ('TEST_14344.mat');
+tic
+datafilename = ('TEST_14345.mat');
+
+% ::::: Begin the function::::: 
+% function
+% input should be: datafilename, 
+load(datafilename);
+filenameh5 = "DTOTR2_data_step*.h5";
+files = dir(filenameh5);
+numFiles = length(files);
+%
+tmp = h5read(files(1).name, '/entry/data/data');
+[nX, nY,nFrames] = size(tmp);
+totalFrames = nFrames * numFiles;
+
+%% SCALAR DATA:   
+ Ts_sclr = data_struct.pulseID.SLAC_time; % Scalar Time 
+ step = data_struct.scalars.steps; % THis should be an index to each step from the DAQ Measumement. 
+ TCAV_A  = data_struct.scalars.BSA_List_S20.TCAV_LI20_2400_A;% S20 XTCAV Amplitude
+ TCAV_P  = data_struct.scalars.BSA_List_S20.TCAV_LI20_2400_P; % S20 XTCAV Phase
+ BLEN_14  = data_struct.scalars.BSA_List_S14.BLEN_LI14_888_BRAW; % S14 BLEN Counts
+ BLEN_20 = data_struct.scalars.BSA_List_S20.BLEN_LI20_3014_BRAW; % S20 BLEN Counts
+%   
+SCALARMADE = [Ts_sclr step TCAV_A TCAV_P BLEN_14 BLEN_20];
+
+figure() 
+hold on 
+scatter(Ts_sclr, TCAV_A)
+scatter(Ts_sclr, TCAV_P)
+plot(Ts_sclr,BLEN_20)
+plot(Ts_sclr,BLEN_14)
+hold off
+SMOOTHCHIRP2(datafilename)
+
+
+%% BSA DATA: 
+P = H5CAT_IMAGE(filenameh5);
+Ts_BSA = H5CAT_TS(filenameh5);
+
+numframes= size(P,3); 
+pic = P(:,:,1);
+ quicksigY = Project_P_AsymGaussROI(P,1,0.05,0)
+figure() 
+image(pic)
+runnit = 1; 
+% Y_SIG_RMS = zeros(size(P,3),1);
+if runnit == 1
+    for i = 1:numframes
+     Y_SIG_RMS(i)= Project_P_AsymGaussROI(P,i,0.05,0);
+    end 
+    
+    figure() 
+    plot(Ts_BSA,Y_SIG_RMS) 
+    hold off
+    figure()
+    plot(Ts_BSA,Y_SIG_RMS) 
+    
+    figure()
+    scatter(TCAV_P(1:3200),Y_SIG_RMS)
+    title('SigY vs Phase')
+    xlabel('Phase deg')
+    ylabel('SigY') 
+else
+
+end 
+ 
+ Alldata = [SCALARMADE(1:3200,:),Ts_BSA,Y_SIG_RMS']; 
+ 
+
+
+
+
+toc
+FUNCTIONS FOR THE PLOT: 
+% Gathering function for image intensity
+% function [x,y,sig_x,sig_y, mu_x, mu_y,Px,Py,Px_,Py_, Iproc] = spotSigma2D(I)
+% %
+% I = double(I);
+% % image(I)
+% % 1) Background subtract (robust)
+% bg = prctile(I(:), 20);   % tune 10-30 if needed
+% I = I - bg;
+% I(I < 0) = 0;
+% 
+% % 2) Threshold to kill noise floor
+% thr = prctile(I(I>0), 80);  % tune 50-80 depending on SNR
+% BW = I > thr;
+% % 3) ROI from thresholded pixels (bounding box)
+% if any(BW(:))
+%     [yy, xx] = find(BW);
+%     pad = 10;
+%     y0 = max(min(yy)-pad, 1);  y1 = min(max(yy)+pad, size(I,1));
+%     x0 = max(min(xx)-pad, 1);  x1 = min(max(xx)+pad, size(I,2));
+%     Iroi = I(y0:y1, x0:x1);
+% else
+%     Iroi = I; % fallback
+% end
+% Iproc = Iroi;
+% % 4) Projections
+% Px = sum(Iproc, 1);
+% Py = sum(Iproc, 2)';
+% Px_ = smoothdata(Px);
+% Py_ = smoothdata(Py);
+% x = 1:size(Iproc,2);
+% y = 1:size(Iproc,1);
+% % 5) Weighted mean
+% mu_x = sum(x .* Px) / sum(Px); mu_y = sum(y .* Py) / sum(Py);
+% % 6) RMS
+% sig_x = sqrt( sum(((x - mu_x).^2) .* Px) / sum(Px) ); sig_y = sqrt( sum(((y - mu_y).^2) .* Py) / sum(Py) );
+% end
+% Bunch Lenght Calc
+function SigZ_um = XTCAV_BL(SigYpos1,SigY0,SigYneg1,K)
+% this is the parabolic fit version of the bunch lenght calibration: 
+% we have normalized ±90 to ±1 for this... 
+% because of this S == K this time
+% but remember that S = KA... and we didnt really get what A was
+% but there was this parabolic formula where we use sigY^2 = aA^2 +bA + c 
+Y = [SigYpos1^2;
+     SigY0^2;
+     SigYneg1^2];
+
+X = [1 -1 1;
+     0  0 1;
+     1  1 1];
+
+beta = X \ Y; % [a;b;c]
+a = beta(1);
+
+sqrt_a = sqrt(a);  % units: um per A
+SigZ_um = (sqrt_a/abs(K)) * 73;  % X-band: 73 um/deg
+end 
+% Concatenate all the images from .h5 files
+function P = H5CAT_IMAGE(filename)
+% grabs and sctacks DAQ images from a singe test file
+% the filename need to be something lik "DTOTR2_data_step*.h5"
+
+    files = dir(filename);
+    numFiles = length(files);
+P = h5read(files(1).name, '/entry/data/data');
+    for i = 2:numFiles
+        tmp = h5read(files(i).name, '/entry/data/data');
+        P = cat(3, P, tmp);
+    end
+end
+%  concatenate all the Time stamps for .h5 files 
+function  TS = H5CAT_TS(filename)
+    files = dir(filename);
+    numFiles = length(files);
+    TS = h5read(files(1).name, '/entry/instrument/NDAttributes/NDArrayEpicsTSSec');
+    for i= 2:numFiles
+        qik = h5read(files(i).name, '/entry/instrument/NDAttributes/NDArrayEpicsTSSec');
+        TS = cat(1, TS, qik);
+    end 
+end 
+
+function SMOOTHCHIRP2(datafilename)
+load(datafilename);
+
+% ---- gets data ----
+steps = data_struct.scalars.steps;  
+a1 = data_struct.scalars.nonBSA_List_LINAC_KLYS.LI12_SBST_1_PHAS;
+b1 = data_struct.scalars.nonBSA_List_LINAC_KLYS.LI13_SBST_1_PHAS;
+c1 = data_struct.scalars.nonBSA_List_LINAC_KLYS.LI14_SBST_1_PHAS;
+L2_avgP = (a1 + b1 + c1)/3;     
+
+BL20_raw = data_struct.scalars.nonBSA_List_S20. ...
+           BLEN_LI20_3014_BZ203014B_S_SUM;
+
+BL14_raw = data_struct.scalars.BSA_List_S14. ...
+           BLEN_LI14_888_BRAW;
+
+% Force column vectors
+L2_avgP = L2_avgP(:);
+BL20_raw = BL20_raw(:);
+BL14_raw = BL14_raw(:);
+
+%% ============================================================
+% ---- Remove NaNs independently for each fit ----
+%% ============================================================
+
+% ---- BL20 clean ----
+valid20 = ~isnan(L2_avgP) & ~isnan(BL20_raw);
+L2_20 = L2_avgP(valid20);
+BL20 = BL20_raw(valid20);
+
+% ---- BL14 clean ----
+valid14 = ~isnan(L2_avgP) & ~isnan(BL14_raw);
+L2_14 = L2_avgP(valid14);
+BL14 = BL14_raw(valid14);
+
+% ---- Sort individually ----
+[L2_20_sorted, idx20] = sort(L2_20);
+BL20_sorted = BL20(idx20);
+
+[L2_14_sorted, idx14] = sort(L2_14);
+BL14_sorted = BL14(idx14);
+
+% ---- Dense phase grids ----
+L2_fine20 = linspace(min(L2_20_sorted), max(L2_20_sorted), 400)';
+L2_fine14 = linspace(min(L2_14_sorted), max(L2_14_sorted), 400)';
+
+% ---- Fit smoothing splines ----
+f20 = fit(L2_20_sorted, BL20_sorted, 'smoothingspline', 'SmoothingParam', 0.9);
+f14 = fit(L2_14_sorted, BL14_sorted, 'smoothingspline', 'SmoothingParam', 0.9);
+
+BL20_fit = feval(f20, L2_fine20);
+BL14_fit = feval(f14, L2_fine14);
+
+%% ============================================================
+% ---- Plot ----
+%% ============================================================
+
+figure; hold on;
+
+yyaxis left
+plot(L2_fine20, BL20_fit, 'LineWidth', 2);
+ylabel('BL20 [cnts]','FontSize',18);
+
+yyaxis right
+plot(L2_fine14, BL14_fit, 'LineWidth', 2);
+ylabel('BL14 [cnts]','FontSize',18);
+
+xlabel('L2 Average Phase (deg)','FontSize',18);
+title('BL14 vs BL20 vs L2 Phase','Interpreter','latex','FontSize',20);
+
+grid on;
+legend('BL20 fit','BL14 fit','Location','northeast');
+
+end
+
+function Yrms = Project_P_AsymGaussROI(P, frameIdx, roiFrac, plotit)
+% Project_P_AsymGaussROI
+% Fits asymmetric (split) Gaussian to X/Y projections within ROI around peak,
+% AND computes true weighted RMS (second moment) within that same ROI.
+%
+% Inputs:
+%   P        - 3D stack (rows=y, cols=x, frames)
+%   frameIdx - frame index
+%   roiFrac  - fraction of (peak-baseline) used to define ROI width (default 0.2)
+%
+% Outputs (selected):
+%   out.fitX.p = [A mu sigmaL sigmaR C]
+%   out.fitY.p = [A mu sigmaL sigmaR C]
+%   out.roiX / out.roiY = [xLo xHi] or [yLo yHi] in pixel coordinates
+%   out.xRMS_roi_px, out.yRMS_roi_px = RMS from DATA within ROI
+
+    if nargin < 3 || isempty(roiFrac)
+        roiFrac = 0.2; % 20% of peak height
+    end
+
+    if nargin < 4 || isempty(plotit) || plotit == 1 
+        plotit = true;
+    end
+
+    I = double(P(:,:,frameIdx));
+
+    % --- background handling ---
+    bg = median(I(:));
+    I = I - bg;
+    I(I < 0) = 0;
+
+    % --- projections ---
+    xProj = sum(I, 1);     % 1 x nx
+    yProj = sum(I, 2);     % ny x 1
+    x = (1:numel(xProj))';
+    y = (1:numel(yProj))';
+
+    % --- ROI selection + fits ---
+    [fitX, roiX] = fitSplitGaussROI(x, xProj(:), roiFrac);
+    [fitY, roiY] = fitSplitGaussROI(y, yProj(:), roiFrac);
+
+    % --- ROI RMS from DATA (weighted moments within the same ROI) ---
+    % NOTE: fitSplitGaussROI must set fitOut.iBounds = [iLo iHi]
+    iBx = fitX.iBounds;  % [iLo iHi] indices into x/xProj
+    iBy = fitY.iBounds;  % [iLo iHi] indices into y/yProj
+
+    [xMean_roi, xRMS_roi] = weightedMeanRMS(x(iBx(1):iBx(2)), xProj(iBx(1):iBx(2))');
+    [yMean_roi, yRMS_roi] = weightedMeanRMS(y(iBy(1):iBy(2)), yProj(iBy(1):iBy(2)));
+
+    % evaluate for plots (full-length fits just for overlay)
+    xFitFull = splitGaussModel(fitX.p, x);
+    yFitFull = splitGaussModel(fitY.p, y);
+    
+    % --- plotting ---
+    %{
+    if plotit == true
+        figure;
+        subplot(2,2,[1 3])
+        imagesc(I)
+        axis image
+        colormap jet
+        title(sprintf('Frame %d (bg-subtracted)', frameIdx))
+        colorbar
+
+        subplot(2,2,2)
+        plot(x, xProj, 'k-'); hold on
+        plot(x, xFitFull, 'r-', 'LineWidth', 1.5)
+        xline(roiX(1), '--'); xline(roiX(2), '--');
+        xline(xMean_roi, 'm-', 'LineWidth', 1.2);
+        xline(xMean_roi - xRMS_roi, 'm--');
+        xline(xMean_roi + xRMS_roi, 'm--');
+        title('X Projection + ROI Split-Gauss Fit')
+        xlabel('X Pixel'); ylabel('Intensity')
+        legend('Data','Fit','ROI','ROI mean \pm RMS','Location','best')
+        grid on
+        txtX = sprintf('X fit: A=%.3g  mu=%.2f  sL=%.2f  sR=%.2f  C=%.3g', fitX.p);
+        txtX2 = sprintf('X ROI RMS: mean=%.2f px  RMS=%.2f px', xMean_roi, xRMS_roi);
+        text(0.02, 0.95, {txtX, txtX2}, 'Units','normalized', 'VerticalAlignment','top', 'Color','r');
+
+        subplot(2,2,4)
+        plot(yProj, y, 'k-'); hold on
+        plot(yFitFull, y, 'r-', 'LineWidth', 1.5)
+        yline(roiY(1), '--'); yline(roiY(2), '--');
+        yline(yMean_roi, 'm-', 'LineWidth', 1.2);
+        yline(yMean_roi - yRMS_roi, 'm--');
+        yline(yMean_roi + yRMS_roi, 'm--');
+        set(gca,'YDir','reverse')
+        title('Y Projection + ROI Split-Gauss Fit')
+        xlabel('Intensity'); ylabel('Y Pixel')
+        legend('Data','Fit','ROI','ROI mean \pm RMS','Location','best')
+        grid on
+        txtY = sprintf('Y fit: A=%.3g  mu=%.2f  sL=%.2f  sR=%.2f  C=%.3g', fitY.p);
+        txtY2 = sprintf('Y ROI RMS: mean=%.2f px  RMS=%.2f px', yMean_roi, yRMS_roi);
+        text(0.02, 0.95, {txtY, txtY2}, 'Units','normalized', 'VerticalAlignment','top', 'Color','r');
+    else
+    end
+    %}
+    
+    % --- outputs ---
+    % out.frameIdx = frameIdx;
+    % out.bg = bg;
+    % out.roiFrac = roiFrac;
+    % 
+    % out.roiX = roiX;
+    % out.roiY = roiY;
+    % 
+    % out.fitX = fitX;
+    % out.fitY = fitY;
+    % 
+    % out.xMean_roi_px = xMean_roi;
+    % out.xRMS_roi_px  = xRMS_roi;
+    % out.yMean_roi_px = yMean_roi;
+    % out.yRMS_roi_px  = yRMS_roi;
+
+
+    Yrms =  yRMS_roi;
+end
+
+% ===== helper: weighted mean + RMS (second moment) =====
+function [mu, sig] = weightedMeanRMS(axisVals, weights)
+    a = double(axisVals(:));
+    w = double(weights(:));
+    W = sum(w);
+
+    if W <= 0
+        mu = NaN;
+        sig = NaN;
+        return
+    end
+
+    mu = sum(a .* w) / W;
+    sig = sqrt( sum(((a - mu).^2) .* w) / W );
+end
+
+% ===== split Gaussian model =====
+function f = splitGaussModel(p, x)
+% p = [A, mu, sigmaL, sigmaR, C]
+    A = p(1); mu = p(2); sL = p(3); sR = p(4); C = p(5);
+    s = sL * ones(size(x));
+    s(x >= mu) = sR;
+    f = A .* exp(-0.5 * ((x - mu)./s).^2) + C;
+end
+
+% ===== ROI + lsqcurvefit fit =====
+function [fitOut, roi] = fitSplitGaussROI(x, y, roiFrac)
+
+    x = double(x(:));
+    y = double(y(:));
+
+    % Baseline + peak
+    C0 = median(y);
+    [ymax, imax] = max(y);
+    mu0 = x(imax);
+    A0  = max(ymax - C0, eps);
+
+    % Define threshold for ROI bounds
+    thr = C0 + roiFrac*(ymax - C0);
+
+    % Find left bound: last point below thr before peak
+    leftCandidates = find(y(1:imax) <= thr);
+    if isempty(leftCandidates)
+        iLo = max(1, imax - round(0.1*numel(x)));
+    else
+        iLo = leftCandidates(end);
+    end
+
+    % Find right bound: first point below thr after peak
+    rightCandidates = find(y(imax:end) <= thr, 1, 'first');
+    if isempty(rightCandidates)
+        iHi = min(numel(x), imax + round(0.1*numel(x)));
+    else
+        iHi = imax - 1 + rightCandidates;
+    end
+
+    % Safety: enforce minimum ROI width
+    if (iHi - iLo) < 10
+        pad = 5;
+        iLo = max(1, imax - pad);
+        iHi = min(numel(x), imax + pad);
+    end
+
+    roi = [x(iLo), x(iHi)];
+
+    xROI = x(iLo:iHi);
+    yROI = y(iLo:iHi);
+
+    % Initial sigma guess from ROI width
+    width0 = max(2, x(iHi) - x(iLo));
+    sig0 = max(1, width0 / 2.355);
+
+    p0 = [A0, mu0, sig0, sig0, C0];
+
+    % Bounds (these matter a lot for stability)
+    A_lb = 0;
+    A_ub = max(yROI)*2 + eps;
+
+    mu_lb = x(iLo);
+    mu_ub = x(iHi);
+
+    sig_lb = 0.5;                    % pixels
+    sig_ub = max(5, (x(iHi)-x(iLo))); % generous upper bound
+
+    C_lb = min(yROI) - 0.5*abs(min(yROI));
+    C_ub = max(yROI);
+
+    lb = [A_lb, mu_lb, sig_lb, sig_lb, C_lb];
+    ub = [A_ub, mu_ub, sig_ub, sig_ub, C_ub];
+
+    % lsqcurvefit settings
+    opts = optimoptions('lsqcurvefit', ...
+        'Display','off', ...
+        'MaxIterations', 2000, ...
+        'MaxFunctionEvaluations', 20000);
+
+    model = @(p,xx) splitGaussModel(p, xx);
+
+    % Fit in ROI only
+    [p, resnorm, residual, exitflag, output] = lsqcurvefit(model, p0, xROI, yROI, lb, ub, opts);
+
+    fitOut.p = p;
+    fitOut.resnorm = resnorm;
+    fitOut.residual = residual;
+    fitOut.exitflag = exitflag;
+    fitOut.output = output;
+    fitOut.iBounds = [iLo iHi];
+end
